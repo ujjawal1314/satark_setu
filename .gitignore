@@ -95,3 +95,5 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
+API_KEY_INSTRUCTIONS.txt
+GEMINI_STATUS.md
