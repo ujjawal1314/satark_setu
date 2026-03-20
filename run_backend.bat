@@ -1,0 +1,3 @@
+@echo off
+echo Starting SatarkSetu Streaming Backend...
+python backend.py

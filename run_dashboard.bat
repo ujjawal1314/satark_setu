@@ -1,0 +1,3 @@
+@echo off
+echo Starting SatarkSetu Dashboard...
+streamlit run dashboard.py
