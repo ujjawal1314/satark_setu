@@ -1002,10 +1002,6 @@ def render_segmented_health_bar(score: int, title: str = "Health score") -> str:
         <div style="background: rgba(255,255,255,0.92); border-radius: 28px; padding: 26px 24px; border: 1px solid rgba(255,255,255,0.88); box-shadow: 0 18px 34px rgba(180,140,150,0.10); margin-top: 8px; margin-bottom: 24px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
                 <span style="font-size: 1.05rem; font-weight: 600; color: #1c1c1e;">{title}</span>
-                <div style="display: inline-flex; align-items: center; gap: 10px; border: 1px solid rgba(28,28,30,0.08); border-radius: 999px; overflow: hidden;">
-                    <span style="padding: 8px 16px; font-size: 0.95rem; color: #1c1c1e;">Apply</span>
-                    <span style="display: inline-flex; align-items: center; justify-content: center; width: 42px; height: 42px; background: #f5f6fa; font-size: 1.8rem; color: #a1a7b3;">+</span>
-                </div>
             </div>
             <div style="border-top: 1px solid rgba(28,28,30,0.08); margin-bottom: 20px;"></div>
             <h3 style="margin: 0 0 8px 0; font-size: 2.5rem; font-weight: 500; color: #1c1c1e; letter-spacing: -1px;">Your credit score is {score}</h3>
@@ -1718,6 +1714,13 @@ def render_satark_recover_tab(filtered: pd.DataFrame, portfolio_df: pd.DataFrame
                     narr_res.raise_for_status()
                     narr_data = narr_res.json()
                     narrative_text = narr_data.get("narrative", "")
+                    
+                    import re
+                    narrative_text = re.sub(
+                        r'\*\*(.*?)\*\*', 
+                        r'<strong>\1</strong>', 
+                        narrative_text
+                    )
                     
                     st.markdown(
                         f"""
@@ -2645,12 +2648,69 @@ def render_admin_dashboard() -> None:
             st.write(borrower_record["recommendation"])
 
             button_cols = st.columns(2)
-            if button_cols[0].button("Mark Support Required", use_container_width=True):
-                repo.set_status(selected_borrower, "SUPPORT_REQUIRED", "Dashboard intervention recommendation", "dashboard")
-                st.success("Borrower successfully marked as Support Required.")
-            if button_cols[1].button("Mark Recovering", use_container_width=True):
-                repo.set_status(selected_borrower, "RECOVERING", "Borrower moved to recovery monitoring", "dashboard")
-                st.success("Borrower successfully marked as Recovering.")
+            import requests as req
+
+            if button_cols[0].button(
+                "Mark Support Required", 
+                use_container_width=True
+            ):
+                try:
+                    repo.set_status(
+                        selected_borrower,
+                        "SUPPORT_REQUIRED",
+                        "Dashboard intervention recommendation",
+                        "dashboard"
+                    )
+                    # Also update Supabase via API
+                    api_resp = req.post(
+                        f"http://localhost:8000/"
+                        f"update-status/{selected_borrower}",
+                        json={"status": "SUPPORT_REQUIRED"},
+                        timeout=5
+                    )
+                    if api_resp.status_code == 200:
+                        st.success(
+                            "✅ Borrower marked as Support "
+                            "Required and Supabase updated."
+                        )
+                    else:
+                        st.warning(
+                            "Marked locally but Supabase "
+                            "update failed. Check backend."
+                        )
+                except Exception as e:
+                    st.error(f"Update failed: {e}")
+
+            if button_cols[1].button(
+                "Mark Recovering", 
+                use_container_width=True
+            ):
+                try:
+                    repo.set_status(
+                        selected_borrower,
+                        "RECOVERING",
+                        "Borrower moved to recovery monitoring",
+                        "dashboard"
+                    )
+                    # Also update Supabase via API
+                    api_resp = req.post(
+                        f"http://localhost:8000/"
+                        f"update-status/{selected_borrower}",
+                        json={"status": "RECOVERING"},
+                        timeout=5
+                    )
+                    if api_resp.status_code == 200:
+                        st.success(
+                            "✅ Borrower marked as Recovering "
+                            "and Supabase updated."
+                        )
+                    else:
+                        st.warning(
+                            "Marked locally but Supabase "
+                            "update failed. Check backend."
+                        )
+                except Exception as e:
+                    st.error(f"Update failed: {e}")
 
         with top_right:
             metric_a, metric_b, metric_c = st.columns(3)

@@ -360,6 +360,57 @@ def explain_borrower(borrower_id: str):
             status_code=500, detail=str(e)
         )
 
+@app.post("/update-status/{borrower_id}")
+def update_borrower_status(
+    borrower_id: str, 
+    payload: dict
+):
+    """
+    Updates borrower status in Supabase.
+    payload: { "status": "SUPPORT_REQUIRED" }
+    """
+    try:
+        new_status = payload.get("status")
+        if new_status not in [
+            "ACTIVE", 
+            "SUPPORT_REQUIRED", 
+            "RECOVERING", 
+            "WATCHLIST"
+        ]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid status: {new_status}"
+            )
+
+        result = supabase.table("borrowers") \
+            .update({"status": new_status}) \
+            .eq("borrower_id", borrower_id) \
+            .execute()
+
+        if not result.data:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Borrower {borrower_id} "
+                       f"not found"
+            )
+
+        return {
+            "success": True,
+            "borrower_id": borrower_id,
+            "new_status": new_status,
+            "message": f"Status updated to "
+                      f"{new_status}"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500, detail=str(e)
+        )
+
 
 @app.get("/health")
 def health():
