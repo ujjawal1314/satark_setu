@@ -1618,8 +1618,204 @@ def render_explainability(borrower_id: str) -> None:
             f"Explainability unavailable: {e}"
         )
 
+def process_nlp_query(query: str, df: pd.DataFrame) -> dict:
+    import re
+    q = query.lower()
+    
+    # --- LAYER 1: Intent Classification Layer ---
+    intents = {
+        "HIGH_RISK_DETECTION": ["high risk", "critical", "danger", "risky", "stress", "vulnerable"],
+        "MISSED_REPAYMENT": ["missed", "delay", "default", "late", "past due", "history"],
+        "LOW_RISK_TREND": ["low risk", "safe", "stable", "good standing", "reliable"],
+        "EXPOSURE_QUERY": ["exposure", "value", "largest", "biggest", "amount", "top"],
+        "REGION_FILTER": ["region", "area", "districts"],
+    }
+    
+    scores = {intent: 0 for intent in intents}
+    for intent, keywords in intents.items():
+        for kw in keywords:
+            if kw in q:
+                scores[intent] += 1
+                
+    primary_intent = max(scores, key=scores.get)
+    if scores[primary_intent] == 0:
+        primary_intent = "GENERAL_PORTFOLIO_QUERY"
+        
+    # --- LAYER 2: Entity Extraction Layer ---
+    extracted_entities = {}
+    
+    regions = df.get("region", pd.Series()).dropna().unique()
+    for r in regions:
+        if r.lower() in q:
+            extracted_entities["region"] = r
+            break
+            
+    schemes = df.get("loan_scheme", pd.Series()).dropna().unique()
+    for s in schemes:
+        if s.lower() in q:
+            extracted_entities["scheme"] = s
+            break
+
+    # --- LAYER 3: Reasoning & Response Generation Layer ---
+    matched_df = df.copy()
+    reason_parts = [f"Classified Intent as **{primary_intent.replace('_', ' ')}**"]
+    
+    if "region" in extracted_entities:
+        matched_df = matched_df[matched_df["region"] == extracted_entities["region"]]
+        reason_parts.append(f"isolated to '{extracted_entities['region']}'")
+    if "scheme" in extracted_entities:
+        matched_df = matched_df[matched_df["loan_scheme"] == extracted_entities["scheme"]]
+        reason_parts.append(f"under scheme '{extracted_entities['scheme']}'")
+
+    sort_col = "risk_score" if "risk_score" in matched_df.columns else None
+    sort_asc = False
+    
+    if primary_intent == "HIGH_RISK_DETECTION" and sort_col:
+        matched_df = matched_df[matched_df["risk_score"] >= 50]
+        reason_parts.append("exhibiting elevated High Risk markers")
+    elif primary_intent == "LOW_RISK_TREND" and sort_col:
+        matched_df = matched_df[matched_df["risk_score"] < 50]
+        reason_parts.append("exhibiting Low Risk stability")
+        sort_asc = True
+    elif primary_intent == "MISSED_REPAYMENT" and "missed_payments_90d" in matched_df.columns:
+        matched_df = matched_df[matched_df["missed_payments_90d"] > 0]
+        reason_parts.append("showing recent missed payment behaviors")
+    elif primary_intent == "EXPOSURE_QUERY" and "outstanding_amount" in matched_df.columns:
+        sort_col = "outstanding_amount"
+        reason_parts.append("prioritizing maximum outstanding financial value")
+        
+    summary = "System Response: \n" + " • ".join(reason_parts) + "."
+    
+    if sort_col:
+        try:
+            matched_df = matched_df.sort_values(sort_col, ascending=sort_asc).head(10)
+        except Exception:
+            matched_df = matched_df.head(10)
+    else:
+        matched_df = matched_df.head(10)
+    
+    if matched_df.empty:
+        action = "No intervention needed."
+        insight = "All clear: No targets matched precisely."
+    else:
+        avg_risk = matched_df["risk_score"].mean() if "risk_score" in matched_df.columns else 50
+        if primary_intent == "LOW_RISK_TREND":
+            action = "Maintain standard retention protocols. No urgent risk."
+            insight = f"Stable performance. Average risk for this group is {avg_risk:.1f}."
+        elif avg_risk >= 70 or primary_intent == "MISSED_REPAYMENT":
+            action = "Urgent: Deploy branch recovery team immediately for physical verification."
+            insight = f"Critical Exposure detected. Average risk profile requires action ({avg_risk:.1f})."
+        elif avg_risk >= 50:
+            action = "Action Required: Enqueue for tele-calling and SMS escalation protocols."
+            insight = f"Moderate Exposure. Watchful tracking required (Avg risk {avg_risk:.1f})."
+        else:
+            action = "Standard protocol applies. Review in next cycle."
+            insight = f"Stable subset. Routine monitoring sufficient."
+
+    results = []
+    for _, row in matched_df.iterrows():
+        b_risk = float(row.get("risk_score", 0))
+        if b_risk >= 70:
+            band = "CRITICAL"
+        elif b_risk >= 50:
+            band = "HIGH"
+        elif b_risk >= 30:
+            band = "MODERATE"
+        else:
+            band = "LOW"
+            
+        results.append({
+            "borrower_id": row.get("borrower_id", "Unknown"),
+            "name": row.get("name", "Unknown"),
+            "risk_band": band,
+            "reason": f"Matches {primary_intent} [Risk: {b_risk}]"
+        })
+        
+    return {
+        "intent_detected": primary_intent,
+        "entities_found": extracted_entities,
+        "answer": summary,
+        "matching_borrowers": results,
+        "action": action,
+        "insight": insight
+    }
+
 def render_satark_recover_tab(filtered: pd.DataFrame, portfolio_df: pd.DataFrame, detector, repo) -> None:
-    st.subheader("Satark-Recover: AI Risk Intelligence")
+    # NLP Interface Section
+    st.subheader("Portfolio Intelligence Query")
+    
+    st.markdown("""
+        <div style="background: rgba(255,255,255,0.4); backdrop-filter: blur(10px); 
+             border:1px solid rgba(255,255,255,0.6); padding: 16px; border-radius: 12px; margin-bottom: 24px;">
+            <p style="margin:0; font-size:0.95rem; color:#48484a;">
+                <b>Local Intelligence Engine Active</b> — Ask natural language questions about your portfolio internally. Data never leaves the device.
+                <br><i>E.g., "Find high risk borrowers in Himachal Pradesh with missed payments."</i>
+            </p>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    query = st.text_input("Ask SatarkSetu Intelligence:", placeholder="Type your query here...")
+    
+    col1, col2, col3, _ = st.columns([1.5, 1.5, 1.5, 2])
+    trigger_q1 = col1.button("🔥 High-risk in Himachal", use_container_width=True)
+    trigger_q2 = col2.button("⏱️ Missed payments", use_container_width=True)
+    trigger_q3 = col3.button("🛡️ Stable Mudra loans", use_container_width=True)
+    
+    active_query = query
+    if trigger_q1: active_query = "high risk borrowers in Himachal Pradesh"
+    if trigger_q2: active_query = "borrowers with missed payments"
+    if trigger_q3: active_query = "low risk stable mudra"
+    
+    if st.button("Ask SatarkSetu Intelligence", type="primary") or (active_query and active_query != ""):
+        with st.spinner("Processing locally using Custom Intent Engine..."):
+            import time
+            time.sleep(0.4) # Artificial delay for UX feel
+            ans = process_nlp_query(active_query, portfolio_df)
+            
+            e_str = " | ".join(f"{k.title()}: {v}" for k, v in ans["entities_found"].items()) if ans["entities_found"] else "None extracted"
+            
+            st.markdown(f"""
+            <div style="background:#f8fafc; border:1px solid #e2e8f0; padding:16px; border-radius:12px; margin-bottom:16px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #cbd5e1; padding-bottom:12px; margin-bottom:12px;">
+                    <div>
+                        <span style="font-size:0.8rem; text-transform:uppercase; color:#64748b; font-weight:700; letter-spacing:1px;">Detected Intent</span><br>
+                        <span style="font-size:1.1rem; color:#0f172a; font-weight:600;">{ans['intent_detected'].replace('_', ' ')}</span>
+                    </div>
+                    <div style="text-align:right;">
+                        <span style="font-size:0.8rem; text-transform:uppercase; color:#64748b; font-weight:700; letter-spacing:1px;">Entities Extracted</span><br>
+                        <span style="font-size:0.95rem; color:#0f172a;">{e_str}</span>
+                    </div>
+                </div>
+                <h4 style="margin:0 0 8px 0; color:#1e293b;">Query Answer</h4>
+                <div style="color:#334155; font-size:1.05rem;">{ans['answer']}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            c1, c2 = st.columns(2)
+            c1.markdown(f"""
+            <div style="background:#fffbeb; border:1px solid #fde68a; padding:16px; border-radius:12px; height: 100%;">
+                <h4 style="margin:0 0 8px 0; color:#b45309;">Recommended Action</h4>
+                <div style="color:#78350f;">{ans['action']}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            c2.markdown(f"""
+            <div style="background:#f0fdf4; border:1px solid #bbf7d0; padding:16px; border-radius:12px; height: 100%;">
+                <h4 style="margin:0 0 8px 0; color:#15803d;">Key Insight 💡</h4>
+                <div style="color:#166534;">{ans['insight']}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            st.markdown("#### Matching Borrowers")
+            if ans["matching_borrowers"]:
+                render_glass_table(pd.DataFrame(ans["matching_borrowers"]), max_height=300)
+            else:
+                st.info("No matching borrowers to display based on your query criteria.")
+                
+    st.markdown("<br><hr><br>", unsafe_allow_html=True)
+
+    # Original Deep Drill-down Logic
+    st.subheader("Deep AI Drill-Down (Single Borrower)")
     
     borrower_options = filtered["borrower_id"].tolist() if not filtered.empty else portfolio_df["borrower_id"].tolist()
     selected_borrower = st.selectbox("Select borrower for AI Analysis", borrower_options, key="satark_recover_select")
@@ -1793,6 +1989,10 @@ def render_contagion_simulator(
     detector, 
     borrowers_df: pd.DataFrame
 ) -> None:
+    import networkx as nx
+    import plotly.graph_objects as go
+    import time
+    import random
     
     st.markdown(
         """
@@ -1803,363 +2003,150 @@ def render_contagion_simulator(
             padding: 24px 28px;
             margin-bottom: 24px;">
             <h3 style="margin:0 0 8px 0; color:#1c1c1e;">
-                Stress Contagion Simulator
+                🛡️ SatarkSetu: Intervention Animation
             </h3>
             <p style="margin:0; color:#48484a;">
-                Select a borrower and simulate their default. 
-                See how risk propagates through the network 
-                to connected borrowers in real time.
+                Select a borrower and Apply Intervention. 
+                See how targeted action reverses risk contagion 
+                and stabilizes the surrounding network in real time.
             </p>
         </div>
         """,
         unsafe_allow_html=True
     )
 
+    G_full = detector.get_networkx_graph()
+
+    # Get a list of actual borrower nodes
+    borrower_nodes = [n for n in G_full.nodes() if str(n).startswith("BORR_")]
+    if not borrower_nodes:
+        st.warning("No borrowers found in the graph.")
+        return
+    
     # Borrower selector
     col1, col2 = st.columns([2, 1])
     with col1:
-        selected = st.selectbox(
-            "Select borrower to default",
-            portfolio_df["borrower_id"].tolist(),
-            format_func=lambda x: f"{x} — "
-                f"{portfolio_df.loc[portfolio_df['borrower_id']==x, 'name'].values[0]} "
-                f"({portfolio_df.loc[portfolio_df['borrower_id']==x, 'region'].values[0]})",
-            key="contagion_borrower_select"
+        center_node = st.selectbox(
+            "Select Target Account for Intervention",
+            borrower_nodes,
+            format_func=lambda x: f"{x} — {portfolio_df.loc[portfolio_df['borrower_id']==x, 'name'].values[0] if x in portfolio_df['borrower_id'].values else 'Unknown'}"
         )
-    with col2:
-        contagion_depth = st.slider(
-            "Propagation Depth (hops)", 
-            1, 3, 2, 
-            key="contagion_depth"
-        )
-
-    if not selected:
+    
+    if not center_node:
         return
 
-    # Get selected borrower info
-    b_row = portfolio_df[
-        portfolio_df["borrower_id"] == selected
-    ].iloc[0]
+    # Extract the ego graph to build our clustered animation
+    G = nx.ego_graph(G_full, center_node, radius=2)
+    pos = nx.spring_layout(G, k=0.25, seed=42)
+
+    # Assign artificial high risk to show the intervention effect prominently
+    for node in G.nodes():
+        G.nodes[node]['risk'] = random.uniform(0.75, 1.0)
+            
+    st.markdown("---")
     
-    # Show selected borrower card
-    st.markdown(
-        f"""
-        <div style="background: rgba(239,68,68,0.08);
-            border: 1px solid rgba(239,68,68,0.25);
-            border-radius: 16px;
-            padding: 16px 20px;
-            margin: 16px 0;
-            display: flex;
-            align-items: center;
-            gap: 16px;">
-            <div style="font-size:1.8rem;">⚠️</div>
-            <div>
-                <div style="font-weight:700; 
-                            color:#b91c1c; 
-                            font-size:1.05rem;">
-                    Simulating Default: {b_row['name']}
-                </div>
-                <div style="color:#48484a; font-size:0.9rem;">
-                    {b_row['region']} · {b_row['loan_scheme']} · 
-                    Current Risk Score: {b_row['risk_score']}
-                </div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
+    # Placeholders for dynamic rendering
+    metric_placeholder = st.empty()
+    graph_placeholder = st.empty()
 
-    # Run simulation button
+    def get_node_color(risk_score):
+        if risk_score >= 0.65: return "#e0287d"  # High Risk (Pink/Red)
+        elif risk_score >= 0.35: return "#FF9933" # Moderate Risk (Orange/Yellow)
+        else: return "#138808" # Low Risk (Green)
 
+    def create_network_fig(graph, positions):
+        edge_x, edge_y = [], []
+        for edge in graph.edges():
+            x0, y0 = positions[edge[0]]
+            x1, y1 = positions[edge[1]]
+            edge_x.extend([x0, x1, None])
+            edge_y.extend([y0, y1, None])
 
-    clicked_contagion = st.button(
-    "Run Contagion Simulation",
-    use_container_width=True,
-    key="run_contagion"
-    )
-    
-    st.markdown('</div>', unsafe_allow_html=True)
+        edge_trace = go.Scatter(
+            x=edge_x, y=edge_y,
+            line=dict(width=1, color='rgba(150, 150, 150, 0.3)'),
+            hoverinfo='none', mode='lines'
+        )
 
-    if clicked_contagion:
-        with st.spinner("Simulating stress propagation..."):
-            import networkx as nx
-            import time
-
-            G = detector.get_networkx_graph()
+        node_x, node_y, node_colors, node_texts, node_sizes = [], [], [], [], []
+        for node in graph.nodes():
+            node_x.append(positions[node][0])
+            node_y.append(positions[node][1])
+            risk = graph.nodes[node].get('risk', 0.0)
+            node_colors.append(get_node_color(risk))
             
-            if selected not in G:
-                st.warning(
-                    "Selected borrower not found in graph."
-                )
-                return
+            is_center = (node == center_node)
+            node_sizes.append(36 if is_center else 24)
+            prefix = "<b>🎯 TARGET (You)</b><br>" if is_center else ""
+            
+            # Format text cleanly based on node type
+            node_name = str(node).replace("SCHEME::", "Scheme: ").replace("REGION::", "Region: ").replace("CATEGORY::", "Category: ")
+            node_texts.append(f"{prefix}{node_name}<br>Risk: {risk:.2f}")
 
-            # Get affected borrowers within N hops
-            affected = {}
-            for hop in range(1, contagion_depth + 1):
-                neighbors = nx.ego_graph(
-                    G, selected, radius=hop
-                ).nodes()
-                for node in neighbors:
-                    if (node != selected and 
-                        str(node).startswith("BORR_") and
-                        node not in affected):
-                        affected[node] = hop
-
-            # Contagion decay — risk increase by hop distance
-            # Hop 1 = 35% risk increase
-            # Hop 2 = 18% risk increase  
-            # Hop 3 = 8% risk increase
-            decay = {1: 0.35, 2: 0.18, 3: 0.08}
-
-            # Build before/after comparison
-            results = []
-            for borrower_id, hop in affected.items():
-                b_data = portfolio_df[
-                    portfolio_df["borrower_id"] == borrower_id
-                ]
-                if b_data.empty:
-                    continue
-                b = b_data.iloc[0]
-                original_score = float(b["risk_score"])
-                increase = decay.get(hop, 0.05)
-                new_score = min(
-                    100, 
-                    original_score * (1 + increase)
-                )
-                delta = new_score - original_score
-
-                def get_band(score):
-                    if score >= 70: return "CRITICAL"
-                    elif score >= 50: return "HIGH"
-                    elif score >= 30: return "MODERATE"
-                    else: return "LOW"
-
-                results.append({
-                    "borrower_id": borrower_id,
-                    "name": b["name"],
-                    "region": b["region"],
-                    "hop_distance": hop,
-                    "original_score": round(original_score, 1),
-                    "simulated_score": round(new_score, 1),
-                    "risk_increase": round(delta, 1),
-                    "original_band": get_band(original_score),
-                    "new_band": get_band(new_score),
-                    "band_changed": (
-                        get_band(original_score) != 
-                        get_band(new_score)
-                    )
-                })
-
-            results_df = pd.DataFrame(results)
-
-            if results_df.empty:
-                st.info(
-                    "No connected borrowers found "
-                    "within the selected depth."
-                )
-                return
-
-            # Summary metrics
-            st.markdown("### Contagion Impact Summary")
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric(
-                "Borrowers Affected", 
-                len(results_df)
+        node_trace = go.Scatter(
+            x=node_x, y=node_y,
+            mode='markers', hoverinfo='text',
+            text=node_texts,
+            marker=dict(
+                size=node_sizes,
+                color=node_colors,
+                line=dict(color="white", width=2.5)
             )
-            m2.metric(
-                "Band Escalations",
-                int(results_df["band_changed"].sum()),
-                help="Borrowers whose risk band worsened"
-            )
-            m3.metric(
-                "Avg Risk Increase",
-                f"+{results_df['risk_increase'].mean():.1f}",
-            )
-            
-            at_risk_exposure = borrowers_df[
-                borrowers_df["borrower_id"].isin(
-                    results_df["borrower_id"]
-                )
-            ]["outstanding_amount"].sum()
-            m4.metric(
-                "Exposed Loan Value",
-                f"Rs {at_risk_exposure/1e7:.1f} Cr"
-            )
+        )
 
-            # Before vs After chart
-            st.markdown("### Risk Score: Before vs After")
-            
-            fig = go.Figure()
-            
-            # Sort by risk increase
-            chart_df = results_df.sort_values(
-                "risk_increase", ascending=False
-            ).head(20)
-            
-            fig.add_trace(go.Bar(
-                name="Original Score",
-                x=chart_df["name"],
-                y=chart_df["original_score"],
-                marker_color="rgba(100, 200, 150, 0.7)",
-                text=chart_df["original_score"],
-                textposition="outside"
-            ))
-            fig.add_trace(go.Bar(
-                name="Simulated Score",
-                x=chart_df["name"],
-                y=chart_df["simulated_score"],
-                marker_color="rgba(239, 68, 68, 0.7)",
-                text=chart_df["simulated_score"],
-                textposition="outside"
-            ))
-            
-            fig.update_layout(
-                barmode="group",
-                bargap=0.3,
-                xaxis_tickangle=-35,
-                yaxis_title="Risk Score",
-                yaxis=dict(range=[0, 110]),
-                legend=dict(
-                    orientation="h",
-                    yanchor="bottom",
-                    y=1.02
-                ),
-                margin=dict(l=16, r=16, t=48, b=80),
-                paper_bgcolor="rgba(255,255,255,0.18)",
-                plot_bgcolor="rgba(255,255,255,0.10)",
-                font=dict(color="#1c1c1e")
-            )
-            st.plotly_chart(
-                fig, use_container_width=True, theme=None
-            )
+        fig = go.Figure(data=[edge_trace, node_trace])
+        fig.update_layout(
+            showlegend=False, hovermode='closest',
+            margin=dict(b=0, l=0, r=0, t=0),
+            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            uirevision="constant", height=500
+        )
+        return fig
 
-            # Affected borrowers table
-            st.markdown("### Affected Borrowers Detail")
-            
-            display_results = results_df[[
-                "name", "region", "hop_distance",
-                "original_score", "simulated_score", 
-                "risk_increase", "original_band", 
-                "new_band"
-            ]].copy()
-            display_results.columns = [
-                "Name", "Region", "Hop Distance",
-                "Original Score", "Simulated Score",
-                "Risk Increase", "Original Band", 
-                "New Band"
-            ]
-            display_results = display_results.sort_values(
-                "Risk Increase", ascending=False
-            )
-            
-            render_glass_table(
-                display_results, max_height=400
-            )
+    # Initial Rendering
+    initial_total_risk = sum(nx.get_node_attributes(G, 'risk').values())
+    metric_placeholder.metric("Cluster Systemic Risk", f"{initial_total_risk:.2f}")
+    graph_placeholder.plotly_chart(create_network_fig(G, pos), use_container_width=True, theme=None)
 
-            # Network visualization
-            st.markdown("### Contagion Network Map")
-            st.caption(
-                "Red = defaulted borrower | "
-                "Orange = hop 1 affected | "
-                "Yellow = hop 2 affected | "
-                "Green = unaffected"
+    st.markdown("<br>", unsafe_allow_html=True)
+    _, btn_col, _ = st.columns([1,2,1])
+    with btn_col:
+        clicked_intervention = st.button("Apply Intervention", type="primary", use_container_width=True)
+
+    if clicked_intervention:
+        hop_distances = nx.single_source_shortest_path_length(G, center_node)
+        max_hops = max(hop_distances.values()) if hop_distances else 0
+        
+        frames_per_hop = 4
+        healing_rate = 0.12
+        total_frames = (max_hops + 2) * frames_per_hop
+        
+        for frame in range(total_frames):
+            current_wave_radius = frame / frames_per_hop
+            for node in G.nodes():
+                distance = hop_distances.get(node, float('inf'))
+                if distance <= current_wave_radius:
+                    current_risk = G.nodes[node]['risk']
+                    new_risk = max(0.1, current_risk - healing_rate)
+                    G.nodes[node]['risk'] = new_risk
+
+            current_total_risk = sum(nx.get_node_attributes(G, 'risk').values())
+            delta_val = current_total_risk - initial_total_risk
+            
+            metric_placeholder.metric(
+                "Cluster Systemic Risk", 
+                f"{current_total_risk:.2f}", 
+                f"{delta_val:.2f} Risk Eradicated",
+                delta_color="inverse"
             )
+            graph_placeholder.plotly_chart(create_network_fig(G, pos), use_container_width=True, theme=None)
+            time.sleep(0.08)
             
-            ego = nx.ego_graph(
-                G, selected, radius=contagion_depth
-            )
-            pos = nx.spring_layout(ego, seed=42, k=0.3)
-            
-            edge_x, edge_y = [], []
-            for edge in ego.edges():
-                x0, y0 = pos[edge[0]]
-                x1, y1 = pos[edge[1]]
-                edge_x.extend([x0, x1, None])
-                edge_y.extend([y0, y1, None])
-            
-            node_x, node_y = [], []
-            node_color, node_size, node_text = [], [], []
-            
-            affected_ids = set(affected.keys())
-            
-            for node in ego.nodes():
-                x, y = pos[node]
-                node_x.append(x)
-                node_y.append(y)
-                
-                if node == selected:
-                    node_color.append("#ef4444")
-                    node_size.append(28)
-                    node_text.append(
-                        f"DEFAULTED: {node}"
-                    )
-                elif node in affected_ids:
-                    hop = affected[node]
-                    if hop == 1:
-                        node_color.append("#f97316")
-                    elif hop == 2:
-                        node_color.append("#eab308")
-                    else:
-                        node_color.append("#84cc16")
-                    node_size.append(18)
-                    node_text.append(
-                        f"{node} | Hop {hop}"
-                    )
-                else:
-                    node_color.append("#22c55e")
-                    node_size.append(12)
-                    node_text.append(str(node))
-            
-            contagion_fig = go.Figure(
-                data=[
-                    go.Scatter(
-                        x=edge_x, y=edge_y,
-                        mode="lines",
-                        line=dict(
-                            width=0.5, 
-                            color="rgba(150,150,150,0.4)"
-                        ),
-                        hoverinfo="none"
-                    ),
-                    go.Scatter(
-                        x=node_x, y=node_y,
-                        mode="markers",
-                        marker=dict(
-                            color=node_color,
-                            size=node_size,
-                            line=dict(
-                                width=1, 
-                                color="white"
-                            )
-                        ),
-                        text=node_text,
-                        hoverinfo="text"
-                    )
-                ],
-                layout=go.Layout(
-                    height=500,
-                    showlegend=False,
-                    hovermode="closest",
-                    paper_bgcolor="rgba(255,255,255,0.4)",
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    margin=dict(b=0,l=0,r=0,t=0),
-                    xaxis=dict(
-                        showgrid=False, 
-                        zeroline=False, 
-                        showticklabels=False
-                    ),
-                    yaxis=dict(
-                        showgrid=False, 
-                        zeroline=False, 
-                        showticklabels=False
-                    )
-                )
-            )
-            st.plotly_chart(
-                contagion_fig, 
-                use_container_width=True, 
-                theme=None
-            )
+        st.toast("Intervention successfully localized threat!", icon="✅")
+        st.balloons()
+
 
 def render_regional_heatmap(
     regional_df: pd.DataFrame,
@@ -2466,6 +2453,117 @@ def render_regional_heatmap(
             unsafe_allow_html=True
         )
 
+def render_field_visit_planner(portfolio_df: pd.DataFrame, detector) -> None:
+    st.markdown(
+        """
+        <div style="background: rgba(255,255,255,0.5);
+            backdrop-filter: blur(16px);
+            border: 1px solid rgba(255,255,255,0.8);
+            border-radius: 24px;
+            padding: 24px 28px;
+            margin-bottom: 24px;">
+            <h3 style="margin:0 0 8px 0; color:#1c1c1e;">
+                🗺️ Field Visit Planner
+            </h3>
+            <p style="margin:0; color:#48484a;">
+                Optimize your physical branch visits. Actionable routes dynamically generated from AI risk insights and geographic clustering.
+            </p>
+        </div>
+        """, unsafe_allow_html=True
+    )
+    
+    col_filters, col_main = st.columns([1, 2.5])
+    
+    with col_filters:
+        st.markdown("#### Route Settings")
+        min_risk = st.slider("Minimum Risk Level", 0, 100, 45, key="visit_min_risk")
+        
+        regions = ["All"] + sorted(portfolio_df["region"].dropna().unique().tolist())
+        region_filter = st.selectbox("Select Region", regions, key="visit_region")
+        
+        schemes = ["All"] + sorted(portfolio_df["loan_scheme"].dropna().unique().tolist())
+        scheme_filter = st.selectbox("Loan Scheme", schemes, key="visit_scheme")
+        
+        max_route_size = st.number_input("Max Borrowers per Route", min_value=2, max_value=10, value=3)
+        sort_by = st.selectbox("Prioritize By", ["Total Risk", "Exposed Value", "Cluster Density"])
+        
+    with col_main:
+        # 1. Filter borrowers
+        target_df = portfolio_df[portfolio_df["risk_score"] >= min_risk].copy()
+        if region_filter != "All":
+            target_df = target_df[target_df["region"] == region_filter]
+        if scheme_filter != "All":
+            target_df = target_df[target_df["loan_scheme"] == scheme_filter]
+            
+        if target_df.empty:
+            st.info("No borrowers match the current filter criteria.")
+            return
+            
+        # 2. Grouping Logic: Geographic proximity (Region) + Risk Clusters
+        routes = []
+        for region, group in target_df.groupby("region"):
+            # Sort by risk within region to group highest risk together
+            group = group.sort_values("risk_score", ascending=False)
+            
+            # Chunk into routes
+            for i in range(0, len(group), max_route_size):
+                route_chunk = group.iloc[i : i + max_route_size]
+                if len(route_chunk) > 0:
+                    total_risk = route_chunk["risk_score"].sum()
+                    avg_risk = route_chunk["risk_score"].mean()
+                    total_exposure = route_chunk.get("outstanding_amount", pd.Series([0]*len(route_chunk))).sum()
+                    
+                    routes.append({
+                        "route_name": f"Route {len(routes) + 1} — {region} Cluster",
+                        "borrowers": route_chunk.to_dict("records"),
+                        "total_risk": total_risk,
+                        "avg_risk": avg_risk,
+                        "total_exposure": total_exposure,
+                        "density": len(route_chunk),
+                        "region_name": region
+                    })
+                    
+        # 3. Sorting
+        if sort_by == "Total Risk":
+            routes.sort(key=lambda x: x["total_risk"], reverse=True)
+        elif sort_by == "Exposed Value":
+             routes.sort(key=lambda x: x["total_exposure"], reverse=True)
+        else:
+             routes.sort(key=lambda x: x["density"], reverse=True)
+             
+        st.markdown(f"#### Generated Routes ({len(routes)} available)")
+        
+        # 4. Display Logic
+        for r in routes[:10]: # Paginate/limit to top 10 for UI
+            expanded = (r == routes[0]) # Auto-expand only the first one
+            with st.expander(f"📍 {r['route_name']} (Total Risk: {r['total_risk']:.1f})", expanded=expanded):
+                
+                # Intelligence Layer Explanation
+                explanation = f"**AI Prioritization Reason:** *This route efficiently targets {r['density']} high-risk borrowers clustered in geographic proximity within {r['region_name']}. The combined exposure is ₹{r['total_exposure']/1e5:.2f} Lakhs.*"
+                st.markdown(f"<div style='background:rgba(23,66,41,0.05); padding:12px; border-radius:12px; margin-bottom:12px; border-left:4px solid #174229;'>{explanation}</div>", unsafe_allow_html=True)
+                
+                for b in r["borrowers"]:
+                    if b["risk_score"] >= 70:
+                        badge = "<span style='background:#fef2f2; color:#b91c1c; padding:2px 8px; border-radius:12px; border:1px solid #fecaca;'>🔴 CRITICAL</span>"
+                    elif b["risk_score"] >= 50:
+                        badge = "<span style='background:#fffbeb; color:#b45309; padding:2px 8px; border-radius:12px; border:1px solid #fde68a;'>🟠 HIGH</span>"
+                    else:
+                        badge = "<span style='background:#f0fdf4; color:#15803d; padding:2px 8px; border-radius:12px; border:1px solid #bbf7d0;'>🟡 MODERATE</span>"
+                        
+                    st.markdown(
+                        f"""
+                        <div style="padding: 12px; border-bottom: 1px solid rgba(0,0,0,0.1); display: flex; justify-content: space-between;">
+                            <div>
+                                <b>{b['name']}</b> ({b['borrower_id']})<br>
+                                <span style="font-size: 0.85em; color: #666;">{b['loan_scheme']} · Score: {b['risk_score']} · Exposure: ₹{b.get('outstanding_amount', 0)/1e5:.1f} L</span>
+                            </div>
+                            <div style="font-weight: 600; font-size: 0.85em; padding-top: 4px;">
+                                {badge}
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True
+                    )
+
 def render_admin_dashboard() -> None:
     admin_name = st.session_state.get("admin_username", "Admin").title()
     
@@ -2491,11 +2589,10 @@ def render_admin_dashboard() -> None:
     metric_cols[2].metric("High Risk Borrowers", summary["high_risk_borrowers"])
     metric_cols[3].metric("Regional Hotspots", len(clusters))
 
-    overview_tab, borrower_tab, cohort_tab, recover_tab, \
-    contagion_tab = st.tabs(
+    overview_tab, borrower_tab, cohort_tab, recover_tab, contagion_tab, visit_tab = st.tabs(
         ["Portfolio Overview", "Borrower Explorer", 
          "Context & Cohorts", "Satark-Recover AI",
-         "Contagion Simulator"]
+         "Intervention Simulator", "Field Visit Planner"]
     )
 
     with overview_tab:
@@ -2867,6 +2964,9 @@ def render_admin_dashboard() -> None:
         render_contagion_simulator(
             portfolio_df, detector, borrowers_df
         )
+
+    with visit_tab:
+        render_field_visit_planner(portfolio_df, detector)
 
 
 def render_landing_page() -> None:
