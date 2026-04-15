@@ -72,6 +72,7 @@ class SatarkSetuDetector:
         self.peer_grouped = dict(tuple(self.borrower_df.groupby(["loan_scheme", "amount_band"])))
         self.graph = nx.Graph()
         self.analysis_cache: Dict[str, BorrowerAnalysis] = {}
+        self.base_health_cache: Dict[str, float] = {}
 
     def _derive_regional_context(self, borrower_df: pd.DataFrame) -> pd.DataFrame:
         grouped = borrower_df.groupby("region", as_index=False).agg(
@@ -174,6 +175,9 @@ class SatarkSetuDetector:
         }
 
     def _base_health_score(self, borrower_id: str) -> float:
+        if borrower_id in getattr(self, "base_health_cache", {}):
+            return self.base_health_cache[borrower_id]
+            
         row = self._borrower_row(borrower_id)
         features = self.extract_behavioral_features(borrower_id)
 
@@ -188,7 +192,11 @@ class SatarkSetuDetector:
         health -= max(0.0, 1.0 - features["coverage_ratio"]) * 18
         health -= max(0.0, features["inflow_volatility"] - 0.35) * 14
         health += min(8.0, max(0.0, row["current_balance"] / max(row["emi_amount"] * 6, 1.0)))
-        return _clip(health)
+        
+        result = _clip(health)
+        if hasattr(self, "base_health_cache"):
+            self.base_health_cache[borrower_id] = result
+        return result
 
     def _peer_baseline(self, borrower_id: str) -> float:
         row = self._borrower_row(borrower_id)
