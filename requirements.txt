@@ -1,6 +1,9 @@
+streamlit
+plotly
+pandas
+requests
 fastapi
 uvicorn
-pandas
 networkx
 httpx
 python-dotenv
