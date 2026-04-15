@@ -68,6 +68,8 @@ class SatarkSetuDetector:
 
         self.regional_lookup = self.regional_df.set_index("region").to_dict("index")
         self.borrower_lookup = self.borrower_df.set_index("borrower_id")
+        self.txn_grouped = dict(tuple(self.txn_df.groupby("borrower_id")))
+        self.peer_grouped = dict(tuple(self.borrower_df.groupby(["loan_scheme", "amount_band"])))
         self.graph = nx.Graph()
         self.analysis_cache: Dict[str, BorrowerAnalysis] = {}
 
@@ -141,7 +143,9 @@ class SatarkSetuDetector:
         return self.borrower_lookup.loc[borrower_id]
 
     def _borrower_txns(self, borrower_id: str) -> pd.DataFrame:
-        return self.txn_df[self.txn_df["borrower_id"] == borrower_id].sort_values("timestamp")
+        if borrower_id in self.txn_grouped:
+            return self.txn_grouped[borrower_id].sort_values("timestamp")
+        return pd.DataFrame(columns=self.txn_df.columns)
 
     def extract_behavioral_features(self, borrower_id: str) -> Dict[str, float]:
         row = self._borrower_row(borrower_id)
@@ -188,13 +192,17 @@ class SatarkSetuDetector:
 
     def _peer_baseline(self, borrower_id: str) -> float:
         row = self._borrower_row(borrower_id)
-        peers = self.borrower_df[
-            (self.borrower_df["loan_scheme"] == row["loan_scheme"])
-            & (self.borrower_df["amount_band"] == row["amount_band"])
-            & (self.borrower_df["borrower_id"] != borrower_id)
-        ]
+        group_key = (row["loan_scheme"], row["amount_band"])
+        if group_key in self.peer_grouped:
+            peers = self.peer_grouped[group_key]
+            peers = peers[peers["borrower_id"] != borrower_id]
+        else:
+            return float(row["peer_score"])
+        
         if peers.empty:
             return float(row["peer_score"])
+        peer_scores = [self._base_health_score(peer_id) for peer_id in peers["borrower_id"].head(40)]
+        return float(np.mean(peer_scores))
         peer_scores = [self._base_health_score(peer_id) for peer_id in peers["borrower_id"].head(40)]
         return float(np.mean(peer_scores))
 
