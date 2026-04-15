@@ -13,8 +13,13 @@ import streamlit as st
 
 from detection_engine import SatarkSetuDetector
 from repositories import BorrowerRepository
+import os
 
+API_BASE_URL = os.getenv("API_BASE_URL")
+if not API_BASE_URL:
+    API_BASE_URL = "http://localhost:8000"
 
+st.write("Backend URL:", API_BASE_URL)
 
 DATA_FILES = ["borrowers.csv", "loan_transactions.csv", "regional_context.csv"]
 ADMIN_CREDENTIALS = {
@@ -1421,7 +1426,7 @@ def render_explainability(borrower_id: str) -> None:
     import plotly.graph_objects as go
     try:
         resp = requests.get(
-            f"http://localhost:8000/explain/{borrower_id}",
+            f"{API_BASE_URL}/explain/{borrower_id}",
             timeout=10
         )
         data = resp.json()
@@ -1863,7 +1868,7 @@ def render_satark_recover_tab(filtered: pd.DataFrame, portfolio_df: pd.DataFrame
         import requests
         with st.spinner("Connecting to RiskNet AI..."):
             try:
-                res = requests.get(f"http://localhost:8000/analyze/{selected_borrower}")
+                res = requests.get(f"{API_BASE_URL}/analyze/{selected_borrower}")
                 res.raise_for_status()
                 data = res.json()
                 
@@ -1906,7 +1911,7 @@ def render_satark_recover_tab(filtered: pd.DataFrame, portfolio_df: pd.DataFrame
                 col6.metric("Days Past Due", f"{signals.get('days_past_due', 0)}")
                 
                 try:
-                    narr_res = requests.get(f"http://localhost:8000/narrative/{selected_borrower}")
+                    narr_res = requests.get(f"{API_BASE_URL}/narrative/{selected_borrower}")
                     narr_res.raise_for_status()
                     narr_data = narr_res.json()
                     narrative_text = narr_data.get("narrative", "")
@@ -2628,7 +2633,7 @@ def render_admin_dashboard() -> None:
         st.subheader("AI Risk Band Distribution")
         try:
             import requests
-            res = requests.get("http://localhost:8000/portfolio/summary")
+            res = requests.get(f"{API_BASE_URL}/portfolio/summary")
             if res.status_code == 200:
                 summary_data = res.json()
                 counts = summary_data.get("band_counts", {})
@@ -2760,7 +2765,7 @@ def render_admin_dashboard() -> None:
                     )
                     # Also update Supabase via API
                     api_resp = req.post(
-                        f"http://localhost:8000/"
+                        f"{API_BASE_URL}/"
                         f"update-status/{selected_borrower}",
                         json={"status": "SUPPORT_REQUIRED"},
                         timeout=5
@@ -2791,7 +2796,7 @@ def render_admin_dashboard() -> None:
                     )
                     # Also update Supabase via API
                     api_resp = req.post(
-                        f"http://localhost:8000/"
+                        f"{API_BASE_URL}/"
                         f"update-status/{selected_borrower}",
                         json={"status": "RECOVERING"},
                         timeout=5
